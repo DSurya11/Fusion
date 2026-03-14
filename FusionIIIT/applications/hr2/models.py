@@ -274,20 +274,23 @@ class CPDAAdvanceform(models.Model):
 
 
 
+class LeaveStatusChoices(models.TextChoices):
+    ACCEPTED = 'Accepted', 'Accepted'
+    PENDING = 'Pending', 'Pending'
+    REJECTED = 'Rejected', 'Rejected'
+
+
+class LeaveApplicationTypeChoices(models.TextChoices):
+    ONLINE = 'Online', 'Online'
+    OFFLINE = 'Offline', 'Offline'
+
+
+
 
 
  # Leave Application Table
 class LeaveForm(models.Model):
-    STATUS_CHOICES = [
-        ('Accepted', 'Accepted'),
-        ('Pending', 'Pending'),
-        ('Rejected', 'Rejected'),
-    ]
-    Application_type_choices = [
-        ('Online', 'Online'),
-        ('Offline', 'Offline'),
-    ]
-    
+
     id = models.AutoField(primary_key=True)
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='leave_applications')
     name = models.CharField(max_length=40, null=True)
@@ -326,7 +329,7 @@ class LeaveForm(models.Model):
         related_name='academic_responsibility_user'
     )
     AcademicResponsibility_designation=models.ForeignKey(Designation, on_delete=models.CASCADE, null=True, related_name='leave_academic_responsibility_designation') 
-    AcademicResponsibility_status=models.CharField(max_length=10, choices=STATUS_CHOICES, default='Pending')
+    AcademicResponsibility_status=models.CharField(max_length=10, choices=LeaveStatusChoices.choices, default=LeaveStatusChoices.PENDING)
     
     AdministrativeResponsibility_user = models.ForeignKey(
         Employee, 
@@ -335,7 +338,7 @@ class LeaveForm(models.Model):
         related_name='administrative_responsibility_user'
     )
     AdministrativeResponsibility_designation=models.ForeignKey(Designation, on_delete=models.CASCADE, null=True, related_name='leave_administrative_responsibility_designation')
-    AdministrativeResponsibility_status=models.CharField(max_length=10, choices=STATUS_CHOICES, default='Pending')
+    AdministrativeResponsibility_status=models.CharField(max_length=10, choices=LeaveStatusChoices.choices, default=LeaveStatusChoices.PENDING)
     
     Remarks = models.TextField(null=True, blank=True)
     
@@ -346,27 +349,17 @@ class LeaveForm(models.Model):
     first_recieved_by = models.ForeignKey(Employee, on_delete=models.CASCADE, null=True, related_name='leave_first_recieved_by')
     first_recieved_designation=models.ForeignKey(Designation, on_delete=models.CASCADE, null=True, related_name='leave_first_recieved_designation')
 
-    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='Pending')
+    status = models.CharField(max_length=10, choices=LeaveStatusChoices.choices, default=LeaveStatusChoices.PENDING)
     attached_pdf = models.BinaryField(null=True, blank=True)
     attached_pdf_name = models.CharField(max_length=100, null=True, blank=True)
     file_id=models.IntegerField(null=True, blank=True)
-    application_type = models.CharField(max_length=10, choices=Application_type_choices, default='Online')
+    application_type = models.CharField(max_length=10, choices=LeaveApplicationTypeChoices.choices, default=LeaveApplicationTypeChoices.ONLINE)
     
     def __str__(self):
         return f"Leave Application {self.id} - {self.employee.empid.username}"
     
 
 class LeaveClaim(models.Model):
-    STATUS_CHOICES = [
-        ('Accepted', 'Accepted'),
-        ('Pending', 'Pending'),
-        ('Rejected', 'Rejected'),
-    ]
-    APPLICATION_TYPE_CHOICES = [
-        ('Online', 'Online'),
-        ('Offline', 'Offline'),
-    ]
-
     id = models.AutoField(primary_key=True)
     leave_form = models.ForeignKey(LeaveForm, on_delete=models.CASCADE, related_name='leave_claims')
     claim_date=models.DateField(default=date.today)
@@ -402,15 +395,15 @@ class LeaveClaim(models.Model):
         related_name='leave_claim_approved_by_designation'
     )
     
-    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='Pending')
+    status = models.CharField(max_length=10, choices=LeaveStatusChoices.choices, default=LeaveStatusChoices.PENDING)
     attached_pdf = models.BinaryField(null=True, blank=True)
     attached_pdf_name = models.CharField(max_length=100, null=True, blank=True)
     file_id = models.IntegerField(null=True, blank=True)
     
     application_type = models.CharField(
         max_length=10, 
-        choices=APPLICATION_TYPE_CHOICES, 
-        default='Online'
+        choices=LeaveApplicationTypeChoices.choices,
+        default=LeaveApplicationTypeChoices.ONLINE
     )
 
     def __str__(self):

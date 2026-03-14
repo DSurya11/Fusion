@@ -1,13 +1,12 @@
-from django.conf.urls import url, include 
-
 from django.conf.urls import url, include
 from applications.hr2 import views
-from applications.hr2.api import form_views
 
 
 app_name = 'hr2'
 
 urlpatterns = [
+
+    url(r'^api/', include('applications.hr2.api.urls')),
    
     url(r'^api/get_leave_balance', views.get_leave_balance, name='get_leave_balance'),
     url(r'^api/search_employees', views.search_employees, name='search_employees'),

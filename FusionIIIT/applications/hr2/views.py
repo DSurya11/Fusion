@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from .models import LeaveBalance, LeavePerYear, EmpConfidentialDetails , Employee, LeaveForm
 from applications.globals.models import ExtraInfo
 from applications.filetracking.sdk.methods import *
+from . import selectors, services
 
 # Configure a logger for your module
 logger = logging.getLogger(__name__)
@@ -223,10 +224,6 @@ def search_employees(request):
     Returns:
         - A JSON response containing the list of employees matching the search query.
     """
-    user = request.user
-   
-
-    # Check if the user has HR access
     if not check_hr_access(request):
         return JsonResponse({'error': 'HR access required'}, status=403)
 
@@ -236,27 +233,7 @@ def search_employees(request):
         if not search_text:
             return JsonResponse({"error": "Search text is required"}, status=400)
 
-        users = User.objects.filter(username__icontains=search_text)
-        user_list = []
-    
-
-        for user in users:
-        
-            # Fetch designations from HoldsDesignation model
-            designations = HoldsDesignation.objects.filter(user=user)
-
-            if not designations.exists():
-                continue  # Skip users without designations
-
-            for hd in designations:
-                
-                user_list.append({
-                    "id": user.id,
-                    "username": user.username,
-                    "email": user.email,
-                    "designation": hd.designation.name,  # Assuming designation has a 'name' field
-                })
-
+        user_list = services.build_employee_search_response(search_text)
         return JsonResponse({"employees": user_list}, status=200)
 
     except Exception as e:
@@ -333,213 +310,7 @@ def submit_leave_form(request):
         return JsonResponse({'error': 'Authentication required'}, status=401)
 
     try:
-        form_data = request.POST
-        files = request.FILES
-
-        # Validate required fields first
-        required_fields = [
-            'name', 'designation', 'pfno', 'department', 
-            'leaveStartDate', 'leaveEndDate', 'purpose', 'forwardTo'
-        ]
-        missing_fields = [field for field in required_fields if not form_data.get(field)]
-        if missing_fields:
-            return JsonResponse(
-                {'error': f'Missing required fields: {", ".join(missing_fields)}'},
-                status=400
-            )
-
-        # Extract all form data
-        data = {
-            'name': form_data.get('name'),
-            'designation': form_data.get('designation'),
-            'pfno': form_data.get('pfno'),
-            'submissionDate': form_data.get('date'),
-            'department': form_data.get('department'),
-            'leave_start_date': form_data.get('leaveStartDate'),
-            'leave_end_date': form_data.get('leaveEndDate'),
-            'purpose': form_data.get('purpose'),
-            'casual_leave': int(form_data.get('casualLeave', 0)),
-            'vacation_leave': int(form_data.get('vacationLeave', 0)),
-            'earned_leave': int(form_data.get('earnedLeave', 0)),
-            'commuted_leave': int(form_data.get('commutedLeave', 0)),
-            'special_casual_leave': int(form_data.get('specialCasualLeave', 0)),
-            'restricted_holiday': int(form_data.get('restrictedHoliday', 0)),
-            'half_pay_leave': int(form_data.get('halfPayLeave', 0)),
-            'maternity_leave': int(form_data.get('maternityLeave', 0)),
-            'child_care_leave': int(form_data.get('childCareLeave', 0)),
-            'paternity_leave': int(form_data.get('paternityLeave', 0)),
-            'remarks': form_data.get('remarks', 'N/A'),
-            'station_leave': form_data.get('stationLeave', 'false').lower() == 'true',
-            'station_leave_start_date': form_data.get('stationLeaveStartDate'),
-            'station_leave_end_date': form_data.get('stationLeaveEndDate'),
-            'station_leave_address': form_data.get('stationLeaveAddress'),
-            'academic_responsibility_id': form_data.get('academicResponsibility'),
-            'academic_responsibility_designation': form_data.get('academicResponsibility_designation'),
-            'administrative_responsibility_id': form_data.get('administrativeResponsibility'),
-            'administrative_responsibility_designation': form_data.get('administrativeResponsibility_designation'),
-            'first_received_by_id': form_data.get('forwardTo'),
-            'first_received_designation': form_data.get('forwardTo_designation'),
-            'attached_pdf': files.get('attached_pdf')
-        }
-
-        # Validate dates
-        try:
-            data['leave_start_date'] = datetime.strptime(data['leave_start_date'], "%Y-%m-%d").date()
-            data['leave_end_date'] = datetime.strptime(data['leave_end_date'], '%Y-%m-%d').date()
-            if data['leave_end_date'] < data['leave_start_date']:
-                return JsonResponse(
-                    {'error': 'Leave end date cannot be before start date'},
-                    status=400
-                )
-        except ValueError:
-            return JsonResponse(
-                {'error': 'Invalid leave date format. Use YYYY-MM-DD'},
-                status=400
-            )
-
-        # Validate station leave
-        if data['station_leave']:
-            if not all([data['station_leave_start_date'], data['station_leave_end_date'], data['station_leave_address']]):
-                return JsonResponse(
-                    {'error': 'Station leave details are required when station leave is checked'},
-                    status=400
-                )
-            try:
-                data['station_leave_start_date'] = datetime.strptime(data['station_leave_start_date'], '%Y-%m-%d').date()
-                data['station_leave_end_date'] = datetime.strptime(data['station_leave_end_date'], '%Y-%m-%d').date()
-                if data['station_leave_end_date'] < data['station_leave_start_date']:
-                    return JsonResponse(
-                        {'error': 'Station leave end date cannot be before start date'},
-                        status=400
-                    )
-            except ValueError:
-                return JsonResponse(
-                    {'error': 'Invalid station leave date format. Use YYYY-MM-DD'},
-                    status=400
-                )
-        else:
-            data['station_leave_start_date'] = None
-            data['station_leave_end_date'] = None
-            data['station_leave_address'] = None
-
-        # Get employee
-        try:
-            employee = Employee.objects.get(id=user.id)
-        except Employee.DoesNotExist:
-            return JsonResponse({'error': 'Employee not found'}, status=404)
-
-        # Handle academic responsibility (optional)
-        academic_responsibility = None
-        if data['academic_responsibility_id']:
-            try:
-                academic_responsibility = {
-                    'user': Employee.objects.get(id=data['academic_responsibility_id']),
-                    'designation': Designation.objects.get(name=data['academic_responsibility_designation'])
-                }
-            except (Employee.DoesNotExist, Designation.DoesNotExist):
-                return JsonResponse(
-                    {'error': 'Academic Responsibility user or designation not found'},
-                    status=404
-                )
-
-        # Handle administrative responsibility (optional)
-        administrative_responsibility = None
-        if data['administrative_responsibility_id']:
-            try:
-                administrative_responsibility = {
-                    'user': Employee.objects.get(id=data['administrative_responsibility_id']),
-                    'designation': Designation.objects.get(name=data['administrative_responsibility_designation'])
-                }
-            except (Employee.DoesNotExist, Designation.DoesNotExist):
-                return JsonResponse(
-                    {'error': 'Administrative Responsibility user or designation not found'},
-                    status=404
-                )
-
-        # Get first received by (required)
-        try:
-            first_received_by = {
-                'user': Employee.objects.get(id=data['first_received_by_id']),
-                'designation': Designation.objects.get(name=data['first_received_designation'])
-            }
-        except (Employee.DoesNotExist, Designation.DoesNotExist):
-            return JsonResponse(
-                {'error': 'First Received By user or designation not found'},
-                status=404
-            )
-
-        # Handle PDF attachment
-        pdf_data = None
-        if data['attached_pdf']:
-            pdf_data = {
-                'binary': data['attached_pdf'].read(),
-                'name': data['attached_pdf'].name
-            }
-
-        # Create leave form first (without file_id)
-        leave_form = LeaveForm(
-            employee=employee,
-            name=data['name'],
-            designation=data['designation'],
-            personalfileNo=data['pfno'],
-            submissionDate=data['submissionDate'],
-            departmentInfo=data['department'],
-            leaveStartDate=data['leave_start_date'],
-            leaveEndDate=data['leave_end_date'],
-            Purpose_of_leave=data['purpose'],
-            Noof_CasualLeave=data['casual_leave'],
-            Noof_vacationLeave=data['vacation_leave'],
-            Noof_earnedLeave=data['earned_leave'],
-            Noof_commutedLeave=data['commuted_leave'],
-            Noof_specialCasualLeave=data['special_casual_leave'],
-            Noof_restrictedHoliday=data['restricted_holiday'],
-            Noof_halfPayLeave=data['half_pay_leave'],
-            Noof_maternityLeave=data['maternity_leave'],
-            Noof_childCareLeave=data['child_care_leave'],
-            Noof_paternityLeave=data['paternity_leave'],
-            Remarks=data['remarks'],
-            LeavingStation=data['station_leave'],
-            StationLeave_startdate=data['station_leave_start_date'],
-            StationLeave_enddate=data['station_leave_end_date'],
-            Address_During_StationLeave=data['station_leave_address'],
-            AcademicResponsibility_user=academic_responsibility['user'] if academic_responsibility else None,
-            AcademicResponsibility_designation=academic_responsibility['designation'] if academic_responsibility else None,
-            AcademicResponsibility_status='Pending' if academic_responsibility else 'Accepted',
-            AdministrativeResponsibility_user=administrative_responsibility['user'] if administrative_responsibility else None,
-            AdministrativeResponsibility_designation=administrative_responsibility['designation'] if administrative_responsibility else None,
-            AdministrativeResponsibility_status='Pending' if administrative_responsibility else 'Accepted',
-            first_recieved_by=first_received_by['user'],
-            first_recieved_designation=first_received_by['designation'],
-            status='Pending',
-            attached_pdf=pdf_data['binary'] if pdf_data else None,
-            attached_pdf_name=pdf_data['name'] if pdf_data else None,
-            file_id=None  # Initialize as None, will be updated later
-        )
-        leave_form.save()
-
-        # Create file tracking if no responsibilities assigned
-        file_id = None
-        if not academic_responsibility and not administrative_responsibility:
-            try:
-                file_id = create_file(
-                    uploader=employee.id,
-                    uploader_designation=data['designation'],
-                    receiver=first_received_by['user'].id.username,
-                    receiver_designation=first_received_by['designation'].name,
-                    src_module="HR",
-                    src_object_id=str(leave_form.id),
-                    file_extra_JSON={"type": "Leave"},
-                    attached_file=None
-                )
-                # Update the leave form with the file_id
-                leave_form.file_id = file_id
-                leave_form.save()
-            except Exception as e:
-                return JsonResponse(
-                    {'error': f'Failed to create file tracking: {str(e)}'},
-                    status=500
-                )
-
+        leave_form, file_id = services.create_online_leave_form(user, request.POST, request.FILES)
         return JsonResponse(
             {
                 'message': 'Leave form submitted successfully',
@@ -548,17 +319,12 @@ def submit_leave_form(request):
             },
             status=201
         )
-
-    except ValidationError as e:
-        return JsonResponse(
-            {'error': f'Validation error: {str(e)}'},
-            status=400
-        )
+    except services.ServiceValidationError as e:
+        return JsonResponse({'error': str(e)}, status=400)
+    except (Employee.DoesNotExist, Designation.DoesNotExist):
+        return JsonResponse({'error': 'Referenced user or designation not found'}, status=404)
     except Exception as e:
-        return JsonResponse(
-            {'error': f'An unexpected error occurred: {str(e)}'},
-            status=500
-        )
+        return JsonResponse({'error': f'An unexpected error occurred: {str(e)}'}, status=500)
 
 @api_view(['GET'])
 @authentication_classes([TokenAuthentication])
@@ -2023,240 +1789,8 @@ def offline_leave_form(request):
 
 
     try:
-        form_data = request.POST
-        files = request.FILES
-        print("Form Data:", form_data)  # Debugging
-        print(1)
-
-        # Parse and validate complex fields
-        try:
-            employee_details = json.loads(form_data.get('employeeDetails', '{}'))
-            leave_details = json.loads(form_data.get('leaveDetails', '{}'))
-            station_leave = json.loads(form_data.get('stationLeave', '{}'))
-            responsibility_transfer = json.loads(form_data.get('responsibilityTransfer', '{}'))
-            forward_to = json.loads(form_data.get('forwardTo', '{}'))
-        except json.JSONDecodeError as e:
-            return JsonResponse({'error': f'Invalid JSON format in one of the fields: {str(e)}'}, status=400)
-
-        print(2)
-
-        print("Parsed Employee Details:", employee_details)
-        print("Parsed Leave Details:", leave_details)
-        print("Parsed Station Leave:", station_leave)
-        print("Parsed Responsibility Transfer:", responsibility_transfer)
-        print("Parsed Forward To:", forward_to)
-
-        # Validate required fields
-        required_fields = [
-            'leaveStartDate', 'leaveEndDate', 'purpose'
-        ]
-        missing_fields = [field for field in required_fields if field not in leave_details]
-        if missing_fields:
-            return JsonResponse(
-                {'error': f"Missing required fields: {', '.join(missing_fields)}"},
-                status=400
-            )
-
-        # Validate forwardTo field
-        if 'id' not in forward_to:
-            return JsonResponse(
-                {'error': "Missing required field: forwardTo"},
-                status=400
-            )
-
-        print(3)
-
-        # Validate dates
-        try:
-            leave_start_date = datetime.strptime(leave_details.get('leaveStartDate'), "%Y-%m-%d").date()
-            leave_end_date = datetime.strptime(leave_details.get('leaveEndDate'), "%Y-%m-%d").date()
-            if leave_end_date < leave_start_date:
-                return JsonResponse(
-                    {'error': 'Leave end date cannot be before start date'},
-                    status=400
-                )
-        except ValueError:
-            return JsonResponse(
-                {'error': 'Invalid leave date format. Use YYYY-MM-DD'},
-                status=400
-            )
-
-        print(4)
-
-        # Use employee details from the parsed data
-        employee_id = employee_details.get('id')
-        if not employee_id:
-            return JsonResponse({'error': 'Employee ID is required in employeeDetails'}, status=400)
-
-        employee_name = employee_details.get('name')
-        if not employee_name:
-            return JsonResponse({'error': 'Employee name is required in employeeDetails'}, status=400)
-
-        employee_designation = employee_details.get('designation')
-        if not employee_designation:
-            return JsonResponse({'error': 'Employee designation is required in employeeDetails'}, status=400)
-
-        employee_pfno = employee_details.get('pfno')
-        if not employee_pfno:
-            return JsonResponse({'error': 'Employee PF number is required in employeeDetails'}, status=400)
-
-        print(5)
-
-        # Validate and fetch academic responsibility
-        academic_responsibility_user = None
-        academic_responsibility_designation = None
-        if responsibility_transfer.get('academicResponsibility'):
-            try:
-                academic_responsibility_user = Employee.objects.get(id=responsibility_transfer['academicResponsibility']['id'])
-                academic_responsibility_designation = Designation.objects.get(name=responsibility_transfer['academicResponsibility']['designation'])
-                
-            except (Employee.DoesNotExist, Designation.DoesNotExist):
-                return JsonResponse({'error': 'Invalid academic responsibility details'}, status=400)
-
-        # Validate and fetch administrative responsibility
-        administrative_responsibility_user = None
-        administrative_responsibility_designation = None
-        if responsibility_transfer.get('administrativeResponsibility'):
-            try:
-                administrative_responsibility_user = Employee.objects.get(id=responsibility_transfer['administrativeResponsibility']['id'])
-                administrative_responsibility_designation = Designation.objects.get(name=responsibility_transfer['administrativeResponsibility']['designation'])
-            except (Employee.DoesNotExist, Designation.DoesNotExist):
-                return JsonResponse({'error': 'Invalid administrative responsibility details'}, status=400)
-
-        print(6)
-        
-        # get forward_designation Designation object by name
-
-        try:
-            forward_designation = Designation.objects.get(name=forward_to['designation'])
-        except Designation.DoesNotExist:
-            return JsonResponse({'error': 'Invalid forwardTo designation'}, status=400)
-        
-        print(7)
-        print(forward_to['id'])
-        print(forward_designation)
-    
-
-        # Create leave form
-        leave_form = LeaveForm(
-            employee=Employee.objects.get(id=employee_id),  # Use employee ID from parsed data
-            name=employee_name,  # Use name from employeeDetails
-            designation=employee_designation,
-            personalfileNo=employee_pfno,
-            submissionDate=datetime.now().date(),
-            departmentInfo=employee_details.get('department', 'N/A'),
-            leaveStartDate=leave_start_date,
-            leaveEndDate=leave_end_date,
-            Purpose_of_leave=leave_details.get('purpose'),
-            Noof_CasualLeave=int(leave_details.get('casualLeave', 0)),
-            Noof_vacationLeave=int(leave_details.get('vacationLeave', 0)),
-            Noof_earnedLeave=int(leave_details.get('earnedLeave', 0)),
-            Noof_commutedLeave=int(leave_details.get('commutedLeave', 0)),
-            Noof_specialCasualLeave=int(leave_details.get('specialCasualLeave', 0)),
-            Noof_restrictedHoliday=int(leave_details.get('restrictedHoliday', 0)),
-            Noof_halfPayLeave=int(leave_details.get('halfPayLeave', 0)),
-            Noof_maternityLeave=int(leave_details.get('maternityLeave', 0)),
-            Noof_childCareLeave=int(leave_details.get('childCareLeave', 0)),
-            Noof_paternityLeave=int(leave_details.get('paternityLeave', 0)),
-            Remarks=leave_details.get('remarks', 'N/A'),
-            LeavingStation=station_leave.get('isStationLeave', False),
-            StationLeave_startdate=station_leave.get('stationLeaveStartDate'),
-            StationLeave_enddate=station_leave.get('stationLeaveEndDate'),
-            Address_During_StationLeave=station_leave.get('stationLeaveAddress'),
-            status='Accepted',
-            AcademicResponsibility_user=academic_responsibility_user,
-            AcademicResponsibility_designation=academic_responsibility_designation,
-            AcademicResponsibility_status='Accepted',
-            AdministrativeResponsibility_user=administrative_responsibility_user,
-            AdministrativeResponsibility_designation=administrative_responsibility_designation,
-            AdministrativeResponsibility_status='Accepted',
-            approved_by=Employee.objects.get(id=forward_to['id']),
-            approved_by_designation=forward_designation,
-            approvedDate=datetime.now().date(),
-            first_recieved_by=Employee.objects.get(id=forward_to['id']),
-            first_recieved_designation=forward_designation,
-            
-            attached_pdf=files.get('attachedPdf').read() if files.get('attachedPdf') else None,
-            attached_pdf_name=files.get('attachedPdf').name if files.get('attachedPdf') else None,
-            application_type='Offline'  # Explicitly set to Offline
-        )
-        print(86977)
-        
-        leave_form.save()
-
-        print(8)
-
-
-
-        # Create file tracking
-        try:
-            # Fetch the Employee object using employee_id
-            print("emp_id", employee_id)  # Debugging
-            uploader_employee = Employee.objects.get(id=employee_id)
-            print("uploader_employee", uploader_employee)  # Debugging
-
-            # Fetch the receiver's username
-            receiver_employee = Employee.objects.get(id=forward_to['id'])
-            receiver_username = receiver_employee.id.username  # Get the username of the receiver
-
-            # Log inputs to create_file
-            print("uploader:", uploader_employee.id.username)
-            print("uploader_designation:", employee_designation)
-            print("receiver:", receiver_username)  # Use the username of the receiver
-            print("receiver_designation:", forward_to['designation'])
-            print("src_module:", "HR")
-            print("src_object_id:", str(leave_form.id))
-
-            # Call create_file
-            file_id = create_file(
-                uploader=uploader_employee.id.username,
-                uploader_designation=employee_designation,
-                receiver=receiver_username,  # Pass the username of the receiver
-                receiver_designation=forward_to['designation'],
-                src_module="HR",
-                src_object_id=str(leave_form.id),
-                file_extra_JSON={"type": "Leave"},
-                attached_file=None
-            )
-             # Update the leave form with the file_id
-            leave_form.file_id = file_id
-            leave_form.save()
-            print(file_id)
-            current_owner = get_current_file_owner(file_id)
-            current_owner_designation=get_current_file_owner_designation(file_id)
-            remarks = f"Accepted by {current_owner} "
-            track_id=forward_file(
-                file_id=file_id,
-                receiver=current_owner,
-                receiver_designation=current_owner_designation,
-                remarks=remarks,
-                file_extra_JSON=None
-            )
-
-            # Approve the file
-            
-
-            print(9)  # Debugging
-           
-        except Exception as e:
-            print(f"Error in create_file: {str(e)}")  # Debugging
-            return JsonResponse(
-                {'error': f'Failed to create file tracking: {str(e)}'},
-                status=500
-            )
-
-        # Update leave balance
-        leave_balance = LeaveBalance.objects.get(empid=Employee.objects.get(id=employee_id))
-        leave_balance.casual_leave_taken += leave_form.Noof_CasualLeave
-        leave_balance.special_casual_leave_taken += leave_form.Noof_specialCasualLeave
-        leave_balance.earned_leave_taken += (leave_form.Noof_earnedLeave + 2 * leave_form.Noof_vacationLeave)
-        leave_balance.half_pay_leave_taken += (leave_form.Noof_halfPayLeave + 2 * leave_form.Noof_commutedLeave)
-        leave_balance.maternity_leave_taken += leave_form.Noof_maternityLeave
-        leave_balance.child_care_leave_taken += leave_form.Noof_childCareLeave
-        leave_balance.paternity_leave_taken += leave_form.Noof_paternityLeave
-        leave_balance.restricted_holiday_taken += leave_form.Noof_restrictedHoliday
-        leave_balance.save()
-
+        parsed = services.parse_offline_payload(request.POST)
+        leave_form, file_id = services.create_offline_leave_form(parsed, request.FILES)
         return JsonResponse(
             {
                 'message': 'Offline leave form submitted and approved successfully',
@@ -2265,7 +1799,10 @@ def offline_leave_form(request):
             },
             status=201
         )
-
+    except services.ServiceValidationError as e:
+        return JsonResponse({'error': str(e)}, status=400)
+    except (Employee.DoesNotExist, Designation.DoesNotExist):
+        return JsonResponse({'error': 'Referenced user or designation not found'}, status=404)
     except Exception as e:
         return JsonResponse({'error': f'An unexpected error occurred: {str(e)}'}, status=500)
     

@@ -9,7 +9,7 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('globals', '0002_moduleaccess'),
+        ('globals', '0002_auto_20241007_2302'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
         ('hr2', '0002_auto_20241012_1459'),
     ]
